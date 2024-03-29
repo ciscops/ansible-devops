@@ -15,7 +15,8 @@ keys_to_replace = [
     "openconfig-system-ext:ssh-source-interface",
     "openconfig-network-instance:interface-id",
     "openconfig-network-instance:index",
-    "openconfig-network-instance:local-address"
+    "openconfig-network-instance:local-address",
+    "openconfig-system-ext:track-interface"
 ]
 
 
@@ -51,9 +52,12 @@ def xlate_value(data, intf_dict):
         return
 
 
-def intf_xlate(data, intf_dict):
+def intf_xlate(data, intf_dict=None):
     if not data:
         return {}
+
+    if intf_dict is None:
+        return data
 
     data_out = data.copy()
     xlate_value(data_out, intf_dict)
@@ -61,9 +65,12 @@ def intf_xlate(data, intf_dict):
     return data_out
 
 
-def intf_truncate(data, intf_dict):
+def intf_truncate(data, intf_dict=None):
     if not data:
         return {}
+
+    if intf_dict is None:
+        return data
 
     regex_list = intf_dict.keys()
     temp_interface_list = []
@@ -97,9 +104,9 @@ def intf_truncate(data, intf_dict):
                     for (prot_index, protocol) in enumerate(instance["openconfig-network-instance:protocols"]["openconfig-network-instance:protocol"]):
                         if "openconfig-network-instance:ospfv2" in protocol and ("openconfig-network-instance:areas" in
                                                                                  protocol["openconfig-network-instance:ospfv2"]):
-                            temp_ospf_interface_list = []
                             for (area_index, area) in enumerate(protocol["openconfig-network-instance:ospfv2"]["openconfig-network-instance:areas"]
                                                                 ["openconfig-network-instance:area"]):
+                                temp_ospf_interface_list = []
                                 if "openconfig-network-instance:interfaces" in area:
                                     for interface in area["openconfig-network-instance:interfaces"]["openconfig-network-instance:interface"]:
                                         if found_full_match(interface["openconfig-network-instance:id"].split(".")[0], intf_dict):
@@ -145,12 +152,132 @@ def intf_truncate(data, intf_dict):
                      [instance_index]["openconfig-network-instance:mpls"]["openconfig-network-instance:global"]
                      ["openconfig-network-instance:interface-attributes"]["openconfig-network-instance:interface"]) = temp_mpls_interface_list
 
+        # Truncate openconfig-acl interfaces
+        if "openconfig-acl:acl" in oc_data and "openconfig-acl:interfaces" in oc_data["openconfig-acl:acl"]:
+            temp_acl_interface_list = []
+            for interface in oc_data["openconfig-acl:acl"]["openconfig-acl:interfaces"]["openconfig-acl:interface"]:
+                if found_full_match(interface["openconfig-acl:id"].split(".")[0], intf_dict):
+                    temp_acl_interface_list.append(interface)
+
+            data_out["mdd:openconfig"]["openconfig-acl:acl"]["openconfig-acl:interfaces"]["openconfig-acl:interface"] = temp_acl_interface_list
+
     return data_out
 
 
-def intf_xform(data, intf_dict):
+def vlan_truncate(data, vlan_list=None):
+    if not data:
+        return {}
+
+    if vlan_list is None:
+        return data
+
+    data_out = data.copy()
+
+    if "mdd:openconfig" in data:
+        oc_data = data["mdd:openconfig"]
+
+        # Truncate VLANs from network instances
+        try:
+            instances = oc_data["openconfig-network-instance:network-instances"]["openconfig-network-instance:network-instance"]
+            for (instance_index, instance) in enumerate(instances):
+                temp_vlan_list = []
+                try:
+                    vlans = instance["openconfig-network-instance:vlans"]["openconfig-network-instance:vlan"]
+                    for vlan in vlans:
+                        if vlan["openconfig-network-instance:vlan-id"] in vlan_list:
+                            temp_vlan_list.append(vlan)
+                    (data_out["mdd:openconfig"]["openconfig-network-instance:network-instances"]["openconfig-network-instance:network-instance"]
+                     [instance_index]["openconfig-network-instance:vlans"]["openconfig-network-instance:vlan"]) = temp_vlan_list
+                except KeyError:
+                    pass
+        except KeyError:
+            pass
+
+        # Truncate VLANs from STP
+        try:
+            rapid_pvst = oc_data["openconfig-spanning-tree:stp"]["openconfig-spanning-tree:rapid-pvst"]
+            try:
+                temp_stp_vlan_list = []
+                vlans = rapid_pvst["openconfig-spanning-tree:vlan"]
+                for vlan in vlans:
+                    if vlan["openconfig-spanning-tree:vlan-id"] in vlan_list:
+                        temp_stp_vlan_list.append(vlan)
+                (data_out["mdd:openconfig"]["openconfig-spanning-tree:stp"]["openconfig-spanning-tree:rapid-pvst"]
+                 ["openconfig-spanning-tree:vlan"]) = temp_stp_vlan_list
+            except KeyError:
+                pass
+        except KeyError:
+            pass
+
+        # Truncate VLANs from trunk interfaces
+        try:
+            interfaces = oc_data["openconfig-interfaces:interfaces"]["openconfig-interfaces:interface"]
+            for interface_index, interface in enumerate(interfaces):
+                # Check port-channel interfaces
+                try:
+                    temp_allowed_vlan_list = []
+                    allowed_vlans = (interface["openconfig-if-aggregate:aggregation"]["openconfig-vlan:switched-vlan"]
+                                     ["openconfig-vlan:config"]["openconfig-vlan:trunk-vlans"])
+                    for vlan in allowed_vlans:
+                        if vlan in vlan_list:
+                            temp_allowed_vlan_list.append(vlan)
+                    (data_out["mdd:openconfig"]["openconfig-interfaces:interfaces"]["openconfig-interfaces:interface"][interface_index]
+                     ["openconfig-if-aggregate:aggregation"]["openconfig-vlan:switched-vlan"]["openconfig-vlan:config"]
+                     ["openconfig-vlan:trunk-vlans"]) = temp_allowed_vlan_list
+                except KeyError:
+                    pass
+
+                # Check physical interfaces
+                try:
+                    temp_allowed_vlan_list = []
+                    allowed_vlans = (interface["openconfig-if-ethernet:ethernet"]["openconfig-vlan:switched-vlan"]
+                                     ["openconfig-vlan:config"]["openconfig-vlan:trunk-vlans"])
+                    for vlan in allowed_vlans:
+                        if vlan in vlan_list:
+                            temp_allowed_vlan_list.append(vlan)
+                    (data_out["mdd:openconfig"]["openconfig-interfaces:interfaces"]["openconfig-interfaces:interface"][interface_index]
+                     ["openconfig-if-ethernet:ethernet"]["openconfig-vlan:switched-vlan"]["openconfig-vlan:config"]
+                     ["openconfig-vlan:trunk-vlans"]) = temp_allowed_vlan_list
+                except KeyError:
+                    pass
+
+        except KeyError:
+            pass
+
+    return data_out
+
+
+def delete_key(data, key_list):
+    if isinstance(data, dict):
+        if key_list[0] in list(data):
+            if len(key_list) == 1:
+                del data[key_list[0]]
+            else:
+                key = key_list.pop(0)
+                delete_key(data[key], key_list)
+
+
+def config_truncate(data, truncate_list=None):
+    """Find all values from a nested dictionary for a given key."""
+
+    if not data:
+        return {}
+
+    if truncate_list is None:
+        return data
+
+    data_out = data.copy()
+
+    for path in truncate_list:
+        delete_key(data_out, path)
+    return data_out
+
+
+def config_xform(data, intf_dict=None, truncate_list=None, vlan_list=None):
     data = intf_truncate(data, intf_dict)
     data = intf_xlate(data, intf_dict)
+    data = config_truncate(data, truncate_list)
+    data = vlan_truncate(data, vlan_list)
     return data
 
 
@@ -160,5 +287,5 @@ class FilterModule(object):
         return {
             'intf_xlate': intf_xlate,
             'intf_truncate': intf_truncate,
-            'intf_xform': intf_xform
+            'config_xform': config_xform
         }
