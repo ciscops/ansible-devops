@@ -73,4 +73,5 @@
         path: /ncs:packages/reload
         input: {}
       when: results.changed
+      connection: local
   when: nso_package_repos is defined
