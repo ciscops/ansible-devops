@@ -74,4 +74,5 @@
         input: {}
       when: results.changed
       connection: local
+      become: false
   when: nso_package_repos is defined
