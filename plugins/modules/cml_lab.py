@@ -362,22 +362,14 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
     return topology, mappings
 
 
-def find_capabilities(device, cdp_line):
+def find_capabilities(device, capability, platform):
     """
     Find capabilites advertised from the remote device. Used to find the best CML image
     :param device:
-    :param cdp_line:
+    :param capabilities:
     :return: dict of {remote_name, {"platform": hw_platform, "type": ("switch", "router", or "l3switch")}
     """
-    rev = copy.deepcopy(cdp_line)
-    rev.reverse()
-    capabilities = []
-    for r in rev[3:]:
-        if r.isdigit():
-            break
-        else:
-            if r == "R" or r == "S":
-                capabilities.append(r)
+    capabilities = capability.split()
     if "R" in capabilities and "S" in capabilities:
         device_type = "l3switch"
     elif "R" in capabilities:
@@ -386,8 +378,27 @@ def find_capabilities(device, cdp_line):
         device_type = "switch"
     else:
         device_type = None
-    platform = cdp_line[-3]
     return {device: {"platform": platform, "type": device_type}}
+
+    # rev = copy.deepcopy(cdp_line)
+    # rev.reverse()
+    # capabilities = []
+    # for r in rev[3:]:
+    #     if r.isdigit():
+    #         break
+    #     else:
+    #         if r == "R" or r == "S":
+    #             capabilities.append(r)
+    # if "R" in capabilities and "S" in capabilities:
+    #     device_type = "l3switch"
+    # elif "R" in capabilities:
+    #     device_type = "router"
+    # elif "S" in capabilities:
+    #     device_type = "switch"
+    # else:
+    #     device_type = None
+    # platform = cdp_line[-3]
+    # return {device: {"platform": platform, "type": device_type}}
 
 
 def parse_cdp_output(cdp_data, dev):
@@ -400,50 +411,58 @@ def parse_cdp_output(cdp_data, dev):
             "router1": "Ten1/2,
             "router2": "Ten1/1",
             }]
-        [1]ldict of devices, platform, and capabilities to be used
-        [{"router10": {"platform": "c6509", "type": "l3switch"}}
+        [1] dict of devices, platform, and capabilities to be used "router10": {"platform": "c6509", "type": "l3switch"}}
     """
     device_links_list = []
     device_info = {}
-    cdp_split = cdp_data.split('\r\n')  # split all csv data on carriage returns
-    cdp_split.pop(0)  # RESTCONF results has an extra blank line
-    # Find the first break list index
-    for c, i in enumerate(cdp_split):
-        if len(i.split()) == 0:
-            index = cdp_split.index(i)
-            break
-
-    index = index + 2  # skip to first device name
-
-    # new_list = [a for a in cdp_split[index:]]  # break single csv line into elements
-    new_list = list(cdp_split[index:])  # break single csv line into elements
-
-    for i in new_list:
-        if len(i.split()) == 1 and "." in i.split()[0]:  # a line with only a name
-            remote = i.split('.')[0]
-        elif len(i.split()) == 1:
-            remote = i.split()[0]
-        elif len(i.split()) == 0:  # blank line is end of cdp neighbors
-            break
-        if i.split()[-1] == "eth0":  # not adding hosts
-            pass
-        elif len(i.split()) > 1 and i.split()[1] in interface_types_list:  # in case hostname is in line with data
-            if "." in i.split()[0]:
-                remote = i.split('.')[0]
-            else:
-                remote = i.split()[0]
-            line_list = i.split()
-            local_interface = line_list[1] + line_list[2]
-            remote_interface = line_list[-2] + line_list[-1]
-            device_links_list.append({dev['hostname']: local_interface, remote: remote_interface})
-            device_info.update(find_capabilities(remote, line_list))
-        elif len(i.split()) > 1:  # line with data below the device name line
-            line_list = i.split()
-            local_interface = line_list[0] + line_list[1]
-            remote_interface = line_list[-2] + line_list[-1]
-            device_links_list.append({dev['hostname']: local_interface, remote: remote_interface})
-            device_info.update(find_capabilities(remote, line_list))
+    if "index" in cdp_data:
+        for id, neighbor in cdp_data['index'].items():
+            remote = neighbor['device_id'].split('.')[0]
+            device_links_list.append({dev['hostname']: neighbor['local_interface'], remote: neighbor['port_id']})
+            device_info.update(find_capabilities(remote, neighbor['capability'], neighbor['platform']))
     return device_links_list, device_info
+
+
+
+    # cdp_split = cdp_data.split('\r\n')  # split all csv data on carriage returns
+    # cdp_split.pop(0)  # RESTCONF results has an extra blank line
+    # # Find the first break list index
+    # for c, i in enumerate(cdp_split):
+    #     if len(i.split()) == 0:
+    #         index = cdp_split.index(i)
+    #         break
+
+    # index = index + 2  # skip to first device name
+
+    # # new_list = [a for a in cdp_split[index:]]  # break single csv line into elements
+    # new_list = list(cdp_split[index:])  # break single csv line into elements
+
+    # for i in new_list:
+    #     if len(i.split()) == 1 and "." in i.split()[0]:  # a line with only a name
+    #         remote = i.split('.')[0]
+    #     elif len(i.split()) == 1:
+    #         remote = i.split()[0]
+    #     elif len(i.split()) == 0:  # blank line is end of cdp neighbors
+    #         break
+    #     if i.split()[-1] == "eth0":  # not adding hosts
+    #         pass
+    #     elif len(i.split()) > 1 and i.split()[1] in interface_types_list:  # in case hostname is in line with data
+    #         if "." in i.split()[0]:
+    #             remote = i.split('.')[0]
+    #         else:
+    #             remote = i.split()[0]
+    #         line_list = i.split()
+    #         local_interface = line_list[1] + line_list[2]
+    #         remote_interface = line_list[-2] + line_list[-1]
+    #         device_links_list.append({dev['hostname']: local_interface, remote: remote_interface})
+    #         device_info.update(find_capabilities(remote, line_list))
+    #     elif len(i.split()) > 1:  # line with data below the device name line
+    #         line_list = i.split()
+    #         local_interface = line_list[0] + line_list[1]
+    #         remote_interface = line_list[-2] + line_list[-1]
+    #         device_links_list.append({dev['hostname']: local_interface, remote: remote_interface})
+    #         device_info.update(find_capabilities(remote, line_list))
+    # return device_links_list, device_info
 
 
 def check_for_and_remove_error_links(dls):
