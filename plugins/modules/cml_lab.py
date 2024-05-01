@@ -60,11 +60,6 @@ options:
         required: false
         type: int
         default: 2
-    use_cat9kv:
-        description: Whether or not to use the cat9kv as the l3switch in CML
-        required: no
-        type: bool
-        default: false
 """
 
 EXAMPLES = r"""
@@ -89,13 +84,13 @@ def create_node(node_input):
         "boot_disk_size": 0,
         "configuration": node_input["configuration"],
         "cpu_limit": 100,
-        "cpus": node_input.get("cpus", 1),
+        "cpus": node_input.get("cpus", 0),
         "data_volume": 0,
         "hide_links": False,
         "id": node_input["id"],
         "label": node_input["hostname"],
         "node_definition": node_input["node_definition"],
-        "ram": node_input["ram"],
+        "ram": node_input.get("ram", 0),
         "tags": node_input["tags"],
         "x": node_input["x_position"],
         "y": node_input.get("y_position", 0),
@@ -130,55 +125,41 @@ def switch_generate_interface(c, m, s):
     return c, m, s
 
 
-def add_interfaces_to_topology(topo_node, device_info, physical_interfaces, use_cat9kv=False):
+def get_interfaces_from_node_definition(device_info, node_definitions):
+    """
+    Get the interfaces from the node definition
+    """
+    for node_definition in node_definitions:
+        if node_definition["id"] == device_info["node_definition"]:
+            return node_definition["device"]["interfaces"]["physical"]
+
+def add_interfaces_to_topology(topo_node, device_info, physical_interfaces, node_definitions):
     """
     Adds interfaces to the devices in the CML topology
     """
     number_of_interfaces = len(physical_interfaces) + 3  # initial + 2 spares
     number_of_interfaces += 4 - (number_of_interfaces % 4)  # interfaces come in sets of 4
-    if device_info["type"] == "l3switch" and use_cat9kv is True:
-        topo_node["interfaces"].append({
-            "id": "i1",
-            "label": "GigabitEthernet0/0",
-            "slot": 0,
-            "type": "physical"
-        })
-        counter = 1
-        # cat9kv *requires* that 24 ports be configured for the 24-port version
-        for i in range(24):
-            topo_node["interfaces"].append({
-                "id": "i{0}".format(counter + 1),
-                "label": "GigabitEthernet1/0/{0}".format(counter),
-                "slot": counter,
-                "type": "physical"
-            })
-            counter += 1
-    elif device_info["type"] == "switch" or (device_info["type"] == "l3switch" and use_cat9kv is not True):
-        slot = 0
-        mod = 0
-        counter = 0
+    interfaces = get_interfaces_from_node_definition(device_info, node_definitions)
+    if device_info["type"] == "switch" or (device_info["type"] == "l3switch"):
         if_id = 1
         for i in range(number_of_interfaces):
             topo_node["interfaces"].append({
                 "id": "i{0}".format(if_id),
-                "label": "GigabitEthernet{0}/{1}".format(mod, counter),
-                "slot": slot,
+                "label": interfaces[if_id - 1],
+                "slot": if_id - 1,
                 "type": "physical"
             })
-            counter, mod, slot = switch_generate_interface(counter, mod, slot)
             if_id += 1
     elif device_info["type"] == "router":
-        slot = 0
-        counter = 1
+        if_id = 1
         for i in range(number_of_interfaces):
             topo_node["interfaces"].append({
-                "id": "i{0}".format(counter),
-                "label": "GigabitEthernet{0}".format(counter),
-                "slot": slot,
+                "id": "i{0}".format(if_id),
+                "label": interfaces[if_id - 1],
+                "slot": if_id - 1,
                 "type": "physical"
             })
-            slot += 1
-            counter += 1
+            if_id += 1
 
 
 def map_physical_interfaces_to_logical_interfaces(topo_node, physical_interfaces, start_from):
@@ -208,7 +189,7 @@ def map_physical_interfaces_to_logical_interfaces(topo_node, physical_interfaces
 
 
 def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_full, start_from, device_template,
-                                use_cat9kv=False, devices=None):
+                                node_definitions, devices=None):
     """
     Creates CML topology file and adds nodes
     :param devices_with_interface_dict:
@@ -370,7 +351,7 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
             node_counter += 1
             x_position += 150
             topo_node = create_node(device_info)
-            add_interfaces_to_topology(topo_node, device_info, devices_with_interface_dict[device], use_cat9kv)
+            add_interfaces_to_topology(topo_node, device_info, devices_with_interface_dict[device], node_definitions)
             physical_virtual_map = map_physical_interfaces_to_logical_interfaces(topo_node,
                                                                                  devices_with_interface_dict[device],
                                                                                  start_from)
@@ -630,9 +611,9 @@ def main():
         devices=dict(required=True, type='list', elements='dict'),
         device_template=dict(required=True, type='dict'),
         default_mappings=dict(required=True, type='dict'),
+        node_definitions=dict(required=True, type='list'),
         ext_conn=dict(required=False, type='bool', default=True),
         start_from=dict(required=False, type='int', default=2),
-        use_cat9kv=dict(required=False, type='bool', default=False)
     )
 
     module = AnsibleModule(argument_spec=arguments, supports_check_mode=False)
@@ -643,8 +624,8 @@ def main():
     devices = module.params['devices']
     device_template = module.params['device_template']
     default_mappings = module.params['default_mappings']
+    node_definitions = module.params['node_definitions']
     start_from = module.params['start_from']
-    use_cat9kv = module.params['use_cat9kv']
 
     device_names = get_device_names(devices)
 
@@ -657,7 +638,7 @@ def main():
     devices_with_interface_dict = check_for_and_remove_error_links(device_links)
     sort_device_interfaces(devices_with_interface_dict)
     topology_cml, mappings_cml = cml_topology_create_initial(devices_with_interface_dict, remote_device_info_full,
-                                                             start_from, device_template, use_cat9kv, device_names)
+                                                             start_from, device_template, node_definitions, device_names)
     cml_topology_add_links(topology_cml, mappings_cml, device_links, device_names)
     if module.params['ext_conn']:
         cml_topology_add_external_connectors_and_links(topology_cml, device_template)
