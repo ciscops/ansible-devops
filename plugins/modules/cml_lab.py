@@ -50,6 +50,11 @@ options:
         description: Default interface mappings to apply to all devices
         required: true
         type: dict
+    node_definitions:
+        description: List of node definitions configured in CML
+        required: true
+        type: list
+        elements: dict
     ext_conn:
         description: Whether to add external connectors to lab
         required: false
@@ -556,7 +561,7 @@ def main():
         devices=dict(required=True, type='list', elements='dict'),
         device_template=dict(required=True, type='dict'),
         default_mappings=dict(required=True, type='dict'),
-        node_definitions=dict(required=True, type='list'),
+        node_definitions=dict(required=True, type='list', elements='dict'),
         ext_conn=dict(required=False, type='bool', default=True),
         start_from=dict(required=False, type='int', default=2),
     )
