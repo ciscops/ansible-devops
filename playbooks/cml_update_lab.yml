@@ -6,6 +6,7 @@
   roles:
     - ciscops.mdd.nso
   vars:
+    method: nso_parse
     start_from: 2
     layout: kamada_kawai
     scale: 500
@@ -39,16 +40,35 @@
       vasiright(\d+): vasiright\1
   tasks:
 
-    - name: Get CDP data
-      ansible.builtin.include_role:
-        name: ciscops.mdd.nso
-        tasks_from: exec_command
-      vars:
-        nso_exec_command: show cdp neighbors
+    - when: method == "nso_parse"
+      block:
+        - name: Get CDP data via nso_parse and PyATS
+          ansible.builtin.include_role:
+            name: ciscops.mdd.check
+            tasks_from: nso_parse
+          vars:
+            check_command: "show cdp neighbors"
 
-    - name: Build CDP data table
-      ansible.builtin.set_fact:
-        cdp_data: "{{ {'hostname': inventory_hostname, 'tags': tags if tags is defined else {}, 'cdp': nso_command_output} }}"
+        - name: Build CDP data table
+          ansible.builtin.set_fact:
+            cdp_data: "{{ {'hostname': inventory_hostname, 'tags': tags if tags is defined else {}, 'cdp': parsed_output.cdp} }}"
+
+    - when: method == "cli_parse"
+      block:
+        - name: Get CDP data via cli_parse and PyATS
+          ansible.utils.cli_parse:
+            command: "{{ parser_command }}"
+            parser:
+                name: ansible.netcommon.pyats
+                command: "{{ parser_command | default(omit) }}"
+          connection: network_cli
+          vars:
+            parser_command: "show cdp neighbor"
+          register: parse_results
+
+        - name: Build CDP data table
+          ansible.builtin.set_fact:
+            cdp_data: "{{ {'hostname': inventory_hostname, 'tags': tags if tags is defined else {}, 'cdp': parse_results.parsed.cdp} }}"
 
     - name: Generate topology and mapping file
       run_once: True
