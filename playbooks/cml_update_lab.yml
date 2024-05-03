@@ -7,7 +7,7 @@
     - ciscops.mdd.nso
   vars:
     method: nso_parse
-    start_from: 2
+    ext_conn: true
     layout: kamada_kawai
     scale: 500
     # Default device type mapping for CML
@@ -51,7 +51,7 @@
 
         - name: Build CDP data table
           ansible.builtin.set_fact:
-            cdp_data: "{{ {'hostname': inventory_hostname, 'tags': tags if tags is defined else {}, 'cdp': parsed_output.cdp} }}"
+            cdp_data: "{{ {'hostname': inventory_hostname, 'mgmt_interface': mgmt_interface | default(None), 'tags': tags if tags is defined else {}, 'cdp': parsed_output.cdp} }}"
 
     - when: method == "cli_parse"
       block:
@@ -68,7 +68,7 @@
 
         - name: Build CDP data table
           ansible.builtin.set_fact:
-            cdp_data: "{{ {'hostname': inventory_hostname, 'tags': tags if tags is defined else {}, 'cdp': parse_results.parsed.cdp} }}"
+            cdp_data: "{{ {'hostname': inventory_hostname, 'mgmt_interface': mgmt_interface | default(None), 'tags': tags if tags is defined else {}, 'cdp': parse_results.parsed.cdp} }}"
 
     - name: Generate topology and mapping file
       run_once: True
@@ -94,10 +94,10 @@
         - name: Generate topology
           ciscops.mdd.cml_lab:
             devices: "{{ devices }}"
-            start_from: "{{ start_from }}"
             device_template: "{{ cml_device_template }}"
             default_mappings: "{{ cml_default_mappings }}"
             node_definitions: "{{ cml_node_definitions }}"
+            ext_conn: "{{ ext_conn | bool}}"
           register: results
 
         - name: "Layout graph using the layout {{ layout }}"

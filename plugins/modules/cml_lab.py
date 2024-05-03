@@ -60,11 +60,6 @@ options:
         required: false
         type: bool
         default: true
-    start_from:
-        description: Which physical interface to start mapping to simulated interface
-        required: false
-        type: int
-        default: 2
 """
 
 EXAMPLES = r"""
@@ -150,7 +145,7 @@ def add_interfaces_to_topology(topo_node, device_info, physical_interfaces, node
             if_id += 1
 
 
-def map_physical_interfaces_to_logical_interfaces(topo_node, physical_interfaces, start_from):
+def map_physical_interfaces_to_logical_interfaces(topo_node, physical_interfaces, mgmt_interface):
     """
     Creates a dict of devices with dicts of interfaces with dicts of physical interface names containing dicts of
     virtual interfaces and ids. Device dict also contains node-id, e.g.
@@ -163,21 +158,26 @@ def map_physical_interfaces_to_logical_interfaces(topo_node, physical_interfaces
     :return: dict
     """
     mapping = {}
-
-    # If start_from > 1, find mgmt interface and make sure we map that as well, otherwise it will be truncated
-    if start_from > 1:
-        for interface in topo_node["interfaces"]:
-            if interface["id"] == "i1":
-                mapping[interface["label"]] = {"if-name": interface["label"], "id": interface["id"]}
-        start_from = start_from - 1
+    offset = 1
+    # If mgmt interface is defined, map it to the first physical interface
+    if mgmt_interface is not None:
+        mapping[mgmt_interface] = {"if-name": topo_node["interfaces"][1]["label"], "id": topo_node["interfaces"][1]["id"]}
+        offset = 2
     for i in range(len(physical_interfaces)):
-        mapping[physical_interfaces[i]] = {"if-name": topo_node["interfaces"][start_from + i + 1]["label"],
-                                           "id": topo_node["interfaces"][start_from + i + 1]["id"]}
+        # Don't remap the mgmt interface
+        if physical_interfaces[i] == mgmt_interface:
+            continue
+        mapping[physical_interfaces[i]] = {"if-name": topo_node["interfaces"][i + offset]["label"],
+                                           "id": topo_node["interfaces"][i + offset]["id"]}
     return mapping
 
 
-def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_full, start_from, device_template,
-                                node_definitions, devices=None):
+def get_device_names(devices):
+    return [d['hostname'] for d in devices]
+
+
+def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_full, device_template,
+                                node_definitions, devices):
     """
     Creates CML topology file and adds nodes
     :param devices_with_interface_dict:
@@ -197,9 +197,10 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
     }
     node_counter = 0
     x_position = 0
-    for device in devices_with_interface_dict:
+    device_names = get_device_names(devices)
+    for device_name in devices_with_interface_dict:
         # # Only add devices that were included in devices list
-        if device in devices:
+        if device_name in device_names:
             configs = {
                 "router": '''
     hostname {0}
@@ -231,7 +232,7 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
      exit
     netconf ssh
     end
-    '''.format(device),
+    '''.format(device_name),
                 "switch": '''
     "hostname {0}
     !
@@ -286,7 +287,7 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
      exit
      netconf ssh
      end"
-    '''.format(device),
+    '''.format(device_name),
                 "l3switch": '''
     hostname {0}
     !
@@ -328,23 +329,26 @@ def cml_topology_create_initial(devices_with_interface_dict, remote_device_info_
     license boot level network-advantage addon dna-advantage
     license boot level network-advantage
     end
-    '''.format(device)
+    '''.format(device_name)
             }
-            device_type = remote_device_info_full.get(device, {}).get("type", "router")
+            device_type = remote_device_info_full.get(device_name, {}).get("type", "router")
             device_info = copy.deepcopy(device_template.get(device_type))
-            device_info["hostname"] = device
+            device_info["hostname"] = device_name
             device_info["x_position"] = x_position
             device_info["id"] = "n{0}".format(node_counter)
             device_info["configuration"] = configs[device_type]
             node_counter += 1
             x_position += 150
             topo_node = create_node(device_info)
-            add_interfaces_to_topology(topo_node, device_info, devices_with_interface_dict[device], node_definitions)
+            add_interfaces_to_topology(topo_node, device_info, devices_with_interface_dict, node_definitions)
+            mgmt_interface = None
+            for device in devices:
+                if device["hostname"] == device_name:
+                    mgmt_interface = device.get("mgmt_interface", None)
             physical_virtual_map = map_physical_interfaces_to_logical_interfaces(topo_node,
-                                                                                 devices_with_interface_dict[device],
-                                                                                 start_from)
-            mappings.update({device: {"interfaces": physical_virtual_map,
-                                      "node_id": device_info["id"]}})
+                                                                                 devices_with_interface_dict[device_name],
+                                                                                 mgmt_interface)
+            mappings.update({device_name: {"interfaces": physical_virtual_map, "node_id": device_info["id"]}})
             topology["nodes"].append(topo_node)
 
     return topology, mappings
@@ -396,7 +400,14 @@ def parse_cdp_output(cdp_data, dev):
     return device_links_list, device_info
 
 
-def check_for_and_remove_error_links(dls):
+def get_device(device_name, devices):
+    for device in devices:
+        if device['hostname'] == device_name:
+            return device
+    return None
+
+
+def check_for_and_remove_error_links(device_links, devices):
     """
     In case there is a case such as this:
     Router1   Ten 3/4           155              S I   C9300-24P Ten 1/1/4
@@ -408,17 +419,22 @@ def check_for_and_remove_error_links(dls):
     """
     devices_with_links = {}  # track each devices' interfaces
     redundant_links_to_remove = []  # redundant links to be removed from device_links
-    for link_full in dls:
+
+    for link_full in device_links:
         for device_name in link_full:
             if device_name not in devices_with_links:
                 devices_with_links[device_name] = []
-            if link_full[device_name] not in devices_with_links[device_name]:
+            device = get_device(device_name, devices)
+            # Don't add a link if it's the mgmt interface
+            if device and link_full[device_name] == device.get("mgmt_interface", None):
+                redundant_links_to_remove.append(link_full)
+            elif link_full[device_name] not in devices_with_links[device_name]:
                 devices_with_links[device_name].append(link_full[device_name])
             else:
                 redundant_links_to_remove.append(link_full)
     for link_to_del in redundant_links_to_remove:
-        if link_to_del in dls:
-            dls.remove(link_to_del)
+        if link_to_del in device_links:
+            device_links.remove(link_to_del)
     return devices_with_links
 
 
@@ -552,18 +568,13 @@ def cml_topology_add_external_connectors_and_links(topo, device_template):
     ext_conn_links_create(topo, new_topo, link_node_start, link_start)
 
 
-def get_device_names(devices):
-    return [d['hostname'] for d in devices]
-
-
 def main():
     arguments = dict(
         devices=dict(required=True, type='list', elements='dict'),
         device_template=dict(required=True, type='dict'),
         default_mappings=dict(required=True, type='dict'),
         node_definitions=dict(required=True, type='list', elements='dict'),
-        ext_conn=dict(required=False, type='bool', default=True),
-        start_from=dict(required=False, type='int', default=2),
+        ext_conn=dict(required=False, type='bool', default=True)
     )
 
     module = AnsibleModule(argument_spec=arguments, supports_check_mode=False)
@@ -575,7 +586,6 @@ def main():
     device_template = module.params['device_template']
     default_mappings = module.params['default_mappings']
     node_definitions = module.params['node_definitions']
-    start_from = module.params['start_from']
 
     device_names = get_device_names(devices)
 
@@ -585,12 +595,16 @@ def main():
         for link in temp_device_links:  # add any newly found links to device links
             if link not in device_links:
                 device_links.append(link)  # now saved newly discovered links
-    devices_with_interface_dict = check_for_and_remove_error_links(device_links)
+    devices_with_interface_dict = check_for_and_remove_error_links(device_links, devices)
     sort_device_interfaces(devices_with_interface_dict)
     topology_cml, mappings_cml = cml_topology_create_initial(devices_with_interface_dict, remote_device_info_full,
-                                                             start_from, device_template, node_definitions, device_names)
+                                                             device_template, node_definitions, devices)
     cml_topology_add_links(topology_cml, mappings_cml, device_links, device_names)
     if module.params['ext_conn']:
+        # If creating external connectors, ensure that a mgmt_interface is defined for each device in ansible inventory
+        for device in devices:
+            if device.get("mgmt_interface") is None:
+                module.fail_json(msg="Enabling external connectors requires a mgmt_interface to be defined for each device in ansible inventory.")
         cml_topology_add_external_connectors_and_links(topology_cml, device_template)
     mappings = create_interface_mapping_dict(mappings_cml, default_mappings)
 
